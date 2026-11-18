@@ -1,0 +1,17 @@
+FROM python:3.11-slim
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1
+
+WORKDIR /srv
+
+COPY requirements.txt .
+RUN pip install -r requirements.txt
+
+COPY app/ ./app/
+
+EXPOSE 8000
+
+# 默认启动网关; compose 中主/影子服务用各自命令覆盖
+CMD ["uvicorn", "app.gateway:app", "--host", "0.0.0.0", "--port", "8000"]

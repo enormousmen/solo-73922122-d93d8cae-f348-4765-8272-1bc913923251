@@ -1,0 +1,48 @@
+services:
+  gateway:
+    build: .
+    image: shadow-gateway:latest
+    ports:
+      - "8000:8000"
+    environment:
+      PRIMARY_URL: http://primary:8000
+      SHADOW_URL: http://shadow:8000
+      MAX_SHADOW_CALLS: "4"
+      SHADOW_TIMEOUT_S: "2"
+    mem_limit: 96m
+    mem_reservation: 64m
+    depends_on:
+      - primary
+      - shadow
+    command: ["uvicorn", "app.gateway:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  primary:
+    image: shadow-gateway:latest
+    build: .
+    environment:
+      SERVICE_ROLE: primary
+      SERVICE_PORT: "8000"
+    command: ["uvicorn", "app.quote_service:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  shadow:
+    image: shadow-gateway:latest
+    build: .
+    environment:
+      SERVICE_ROLE: shadow
+      SERVICE_PORT: "8000"
+    command: ["uvicorn", "app.quote_service:app", "--host", "0.0.0.0", "--port", "8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10

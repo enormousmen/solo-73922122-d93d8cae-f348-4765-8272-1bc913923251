@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>影子流量网关控制台</title>
+<style>
+  :root { --bd:#d7dce3; --bg:#f5f7fa; --pri:#2563eb; --ok:#15803d;
+          --bad:#b91c1c; --warn:#b45309; --mut:#64748b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Helvetica Neue",
+         "PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:#0f172a; }
+  header { background:#0f172a; color:#fff; padding:12px 20px; display:flex;
+           align-items:center; gap:16px; flex-wrap:wrap; }
+  header h1 { font-size:17px; margin:0; font-weight:600; }
+  .stat { font-size:12px; opacity:.85; }
+  main { display:grid; grid-template-columns: 380px 1fr; gap:16px; padding:16px;
+         max-width:1500px; margin:0 auto; }
+  @media (max-width:980px){ main{grid-template-columns:1fr;} }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:10px; padding:14px; }
+  .card h2 { font-size:14px; margin:0 0 10px; font-weight:650; }
+  label { display:block; font-size:12px; color:var(--mut); margin:8px 0 3px; }
+  select,input { width:100%; padding:7px 9px; border:1px solid var(--bd);
+                 border-radius:7px; font-size:13px; font-family:inherit; }
+  .row { display:flex; gap:8px; }
+  .row > div { flex:1; }
+  button { cursor:pointer; border:0; border-radius:7px; padding:8px 14px;
+           font-size:13px; font-weight:600; font-family:inherit; }
+  .btn-pri { background:var(--pri); color:#fff; }
+  .btn-ghost { background:#e2e8f0; color:#0f172a; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .btns { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
+  .hint { font-size:12px; color:var(--mut); margin-top:8px; }
+  .tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:10px; }
+  .tab { padding:5px 10px; border:1px solid var(--bd); border-radius:6px;
+         background:#f8fafc; font-size:12px; cursor:pointer; max-width:170px;
+         overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .tab.active { border-color:var(--pri); background:#eff6ff; color:var(--pri); font-weight:650; }
+  .meta { font-size:12px; color:var(--mut); margin-bottom:8px; display:flex; gap:14px; flex-wrap:wrap; }
+  .chunks { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;
+            max-height:340px; overflow:auto; border:1px solid var(--bd); border-radius:8px;
+            background:#0b1020; color:#c7d2fe; padding:10px; }
+  .chunk { padding:2px 0; border-bottom:1px dashed #1e293b; word-break:break-all; }
+  .chunk .idx { color:#7dd3fc; }
+  .chunk .len { color:#86efac; margin-left:8px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--bd);
+          vertical-align:top; word-break:break-all; }
+  th { color:var(--mut); font-weight:600; position:sticky; top:0; background:#fff; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px;
+          font-weight:650; white-space:nowrap; }
+  .pill.match { background:#dcfce7; color:var(--ok); }
+  .pill.mismatch { background:#fee2e2; color:var(--bad); }
+  .pill.shadow_timeout,.pill.shadow_error { background:#fef3c7; color:var(--warn); }
+  .pill.shadow_skipped_no_slot { background:#e0e7ff; color:#3730a3; }
+  .pill.client_disconnected,.pill.primary_error,.pill.primary_incomplete,
+  .pill.shadow_pending {
+          background:#f1f5f9; color:#475569; }
+  .mono { font-family:ui-monospace,Menlo,monospace; font-size:11px; }
+  .records-wrap { max-height:520px; overflow:auto; }
+  .grid2 { display:grid; grid-template-rows:auto auto; gap:16px; }
+  .poll-line { font-size:12px; color:var(--mut); margin-bottom:8px; display:flex;
+           justify-content:space-between; gap:10px; align-items:center; }
+  code.path { background:#f1f5f9; padding:1px 5px; border-radius:4px; font-size:11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>影子流量网关 · 新旧报价旁路比对</h1>
+  <span class="stat" id="gwstat">connecting…</span>
+</header>
+<main>
+  <section class="card">
+    <h2>发起请求</h2>
+    <label>端点</label>
+    <select id="endpoint">
+      <option value="/quote">GET /quote — 普通 JSON 报价</option>
+      <option value="/quote-big">GET /quote-big — 32 MiB 流式响应</option>
+    </select>
+    <div class="row">
+      <div><label>主端延迟 p_delay (s)</label><input id="pdelay" value="0"></div>
+      <div><label>影子延迟 s_delay (s)</label><input id="sdelay" value="0"></div>
+    </div>
+    <div class="row">
+      <div><label>并发请求数</label><input id="concurrency" type="number" value="4" min="1" max="20"></div>
+      <div><label>自定义 status</label><input id="status" placeholder="默认 200"></div>
+    </div>
+    <div class="row">
+      <div>
+        <label>场景开关</label>
+        <select id="scenario">
+          <option value="">默认 (两端一致)</option>
+          <option value="diff=1">diff=1 影子制造差异</option>
+          <option value="fail=1">fail=1 两端强制 500</option>
+        </select>
+      </div>
+      <div>
+        <label>大响应 size (仅 /quote-big)</label>
+        <input id="size" placeholder="默认 33554432">
+      </div>
+    </div>
+    <div class="btns">
+      <button class="btn-pri" id="fire">并发发起</button>
+      <button class="btn-ghost" id="clear">清空面板</button>
+    </div>
+    <p class="hint">
+      网关固定并行调用主端与影子端；客户端只收主端原始字节。影子
+      2 秒硬超时、最多 4 个并发，满额跳过并在记录中注明。
+    </p>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>主端响应（逐块）</h2>
+      <div class="tabs" id="tabs"></div>
+      <div class="meta" id="respMeta">尚未发起请求</div>
+      <div class="chunks" id="chunks"><div style="opacity:.6">响应块将显示在这里…</div></div>
+    </div>
+    <div class="card">
+      <div class="poll-line">
+        <h2 style="margin:0">比对记录</h2>
+        <span><label style="display:inline;margin-right:6px">自动刷新</label>
+          <input type="checkbox" id="autopoll" checked style="width:auto"></span>
+      </div>
+      <div class="records-wrap">
+        <table>
+          <thead><tr>
+            <th>#</th><th>目标</th><th>结果</th><th>主端</th><th>影子</th><th>摘要 / 原因</th>
+          </tr></thead>
+          <tbody id="records"></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+const sessions = [];   // {id, target, meta, chunks}
+let activeIdx = -1;
+
+function buildUrl() {
+  const p = new URLSearchParams();
+  if ($('pdelay').value && Number($('pdelay').value) > 0) p.set('p_delay', $('pdelay').value);
+  if ($('sdelay').value && Number($('sdelay').value) > 0) p.set('s_delay', $('sdelay').value);
+  if ($('status').value) p.set('status', $('status').value);
+  if ($('size').value) p.set('size', $('size').value);
+  const sc = $('scenario').value;
+  if (sc) new URLSearchParams(sc).forEach((v, k) => p.set(k, v));
+  const qs = p.toString();
+  return $('endpoint').value + (qs ? '?' + qs : '');
+}
+
+function renderTabs() {
+  const tabs = $('tabs');
+  tabs.innerHTML = '';
+  sessions.forEach((s, i) => {
+    const t = document.createElement('div');
+    t.className = 'tab' + (i === activeIdx ? ' active' : '');
+    t.textContent = `#${s.idx} ${s.target}`;
+    t.onclick = () => { activeIdx = i; renderTabs(); renderChunks(); };
+    tabs.appendChild(t);
+  });
+}
+
+function renderChunks() {
+  const box = $('chunks'), meta = $('respMeta');
+  if (activeIdx < 0 || !sessions[activeIdx]) {
+    box.innerHTML = '<div style="opacity:.6">响应块将显示在这里…</div>';
+    meta.textContent = '尚未发起请求';
+    return;
+  }
+  const s = sessions[activeIdx];
+  meta.innerHTML = `目标 <code class="path">${s.target}</code>
+    <span>状态: <b>${s.status ?? '…'}</b></span>
+    <span>块数: <b>${s.chunks.length}</b></span>
+    <span>累计字节: <b>${s.bytes}</b></span>
+    <span>耗时: <b>${s.ms ?? '…'} ms</b></span>`;
+  if (!s.chunks.length) { box.innerHTML = '<div style="opacity:.6">等待首块…</div>'; return; }
+  box.innerHTML = s.chunks.map((c, i) =>
+    `<div class="chunk"><span class="idx">#${i}</span><span class="len">${c.length} B</span>
+     <div>${escapeHtml(preview(c))}</div></div>`).join('');
+  box.scrollTop = box.scrollHeight;
+}
+
+function preview(buf) {
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(buf);
+  return text.length > 240 ? text.slice(0, 240) + ' …' : text;
+}
+function escapeHtml(s) {
+  return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+}
+
+async function fireOne(target, idx) {
+  const sess = { idx, target, chunks: [], bytes: 0, status: null, ms: null };
+  sessions.push(sess);
+  activeIdx = sessions.length - 1;
+  renderTabs(); renderChunks();
+  const t0 = performance.now();
+  try {
+    const resp = await fetch(target);
+    sess.status = resp.status;
+    const reader = resp.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sess.chunks.push(value);
+      sess.bytes += value.length;
+      if (sess === sessions[activeIdx]) renderChunks();
+    }
+  } catch (e) {
+    sess.chunks.push(new TextEncoder().encode('[fetch error] ' + e.message));
+  } finally {
+    sess.ms = Math.round(performance.now() - t0);
+    if (sess === sessions[activeIdx]) renderChunks();
+  }
+}
+
+$('fire').onclick = async () => {
+  const n = Math.max(1, Math.min(20, Number($('concurrency').value) || 1));
+  const target = buildUrl();
+  $('fire').disabled = true;
+  const base = sessions.length;
+  await Promise.all(Array.from({ length: n }, (_, i) => fireOne(target, base + i)));
+  $('fire').disabled = false;
+  await loadRecords();
+};
+
+$('clear').onclick = () => {
+  sessions.length = 0; activeIdx = -1;
+  renderTabs(); renderChunks();
+};
+
+const RESULT_TEXT = {
+  match: '一致', mismatch: '不一致', shadow_timeout: '影子超时',
+  shadow_error: '影子失败', shadow_skipped_no_slot: '影子跳过(名额满)',
+  client_disconnected: '客户端断连', primary_error: '主端失败',
+  primary_incomplete: '主端不完整', shadow_completed_primary_incomplete: '主端未完成',
+  shadow_pending: '影子进行中',
+};
+
+function shortHash(h) { return h ? h.slice(0, 10) + '…' : '—'; }
+
+async function loadRecords() {
+  try {
+    const recs = await (await fetch('/api/records')).json();
+    const state = await (await fetch('/api/state')).json();
+    $('gwstat').textContent =
+      `影子在途 ${state.shadow_in_flight}/${state.shadow_capacity} · ` +
+      `记录 ${state.records} 条 · 峰值 RSS ${state.max_rss_mib ?? '?'} MiB / 限额 96 MiB`;
+    $('records').innerHTML = recs.map((r, i) => {
+      const cls = (r.result || 'pending').replace(/[^a-z_]/g, '');
+      const primary = r.primary === 'completed'
+        ? `${r.primary_status} · ${r.primary_ms}ms<br><span class="mono">${shortHash(r.primary_sha256)}</span>`
+        : (r.primary || '…');
+      const shadow = r.shadow === 'completed'
+        ? `${r.shadow_status} · ${r.shadow_ms}ms<br><span class="mono">${shortHash(r.shadow_sha256)}</span>`
+        : (r.shadow || '…');
+      const reason = r.detail || (r.result === 'match' ? '状态码与 SHA-256 均相同' : '');
+      return `<tr>
+        <td>${recs.length - i}</td>
+        <td><code class="path">${escapeHtml(r.target)}</code></td>
+        <td><span class="pill ${cls}">${RESULT_TEXT[r.result] || r.result}</span></td>
+        <td>${primary}</td>
+        <td>${shadow}</td>
+        <td class="mono">${escapeHtml(reason)}</td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    $('gwstat').textContent = '网关不可达: ' + e.message;
+  }
+}
+
+$('autopoll').onchange = () => {};
+setInterval(() => { if ($('autopoll').checked) loadRecords(); }, 1500);
+loadRecords();
+</script>
+</body>
+</html>
