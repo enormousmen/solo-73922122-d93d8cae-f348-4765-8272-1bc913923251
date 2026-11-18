@@ -9,6 +9,11 @@ services:
       SHADOW_URL: http://shadow:8000
       MAX_SHADOW_CALLS: "4"
       SHADOW_TIMEOUT_S: "2"
+      # HMAC 验签密钥: 只存在于服务端环境, 网页/日志/接口均不返回它
+      # 生产部署请用真实密钥覆盖, 例如: SIGNING_SECRET=$(openssl rand -hex 32) docker compose up
+      SIGNING_SECRET: "${SIGNING_SECRET:-dev-only-signing-secret-change-me}"
+      SIGN_WINDOW_S: "60"
+      MAX_NONCES: "1024"
     mem_limit: 96m
     mem_reservation: 64m
     depends_on:

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>影子流量网关控制台</title>
+<title>影子流量网关控制台 · HMAC 验签</title>
 <style>
   :root { --bd:#d7dce3; --bg:#f5f7fa; --pri:#2563eb; --ok:#15803d;
           --bad:#b91c1c; --warn:#b45309; --mut:#64748b; }
@@ -14,10 +14,10 @@
            align-items:center; gap:16px; flex-wrap:wrap; }
   header h1 { font-size:17px; margin:0; font-weight:600; }
   .stat { font-size:12px; opacity:.85; }
-  main { display:grid; grid-template-columns: 380px 1fr; gap:16px; padding:16px;
+  main { display:grid; grid-template-columns: 400px 1fr; gap:16px; padding:16px;
          max-width:1500px; margin:0 auto; }
   @media (max-width:980px){ main{grid-template-columns:1fr;} }
-  .card { background:#fff; border:1px solid var(--bd); border-radius:10px; padding:14px; }
+  .card { background:#fff; border:1px solid var(--bd); border-radius:10px; padding:14px; margin-bottom:16px; }
   .card h2 { font-size:14px; margin:0 0 10px; font-weight:650; }
   label { display:block; font-size:12px; color:var(--mut); margin:8px 0 3px; }
   select,input { width:100%; padding:7px 9px; border:1px solid var(--bd);
@@ -28,6 +28,8 @@
            font-size:13px; font-weight:600; font-family:inherit; }
   .btn-pri { background:var(--pri); color:#fff; }
   .btn-ghost { background:#e2e8f0; color:#0f172a; }
+  .btn-warn { background:#f59e0b; color:#1f2937; }
+  .btn-danger { background:#dc2626; color:#fff; }
   button:disabled { opacity:.5; cursor:not-allowed; }
   .btns { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
   .hint { font-size:12px; color:var(--mut); margin-top:8px; }
@@ -38,7 +40,7 @@
   .tab.active { border-color:var(--pri); background:#eff6ff; color:var(--pri); font-weight:650; }
   .meta { font-size:12px; color:var(--mut); margin-bottom:8px; display:flex; gap:14px; flex-wrap:wrap; }
   .chunks { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px;
-            max-height:340px; overflow:auto; border:1px solid var(--bd); border-radius:8px;
+            max-height:300px; overflow:auto; border:1px solid var(--bd); border-radius:8px;
             background:#0b1020; color:#c7d2fe; padding:10px; }
   .chunk { padding:2px 0; border-bottom:1px dashed #1e293b; word-break:break-all; }
   .chunk .idx { color:#7dd3fc; }
@@ -57,56 +59,108 @@
   .pill.shadow_pending {
           background:#f1f5f9; color:#475569; }
   .mono { font-family:ui-monospace,Menlo,monospace; font-size:11px; }
-  .records-wrap { max-height:520px; overflow:auto; }
+  .records-wrap { max-height:460px; overflow:auto; }
   .grid2 { display:grid; grid-template-rows:auto auto; gap:16px; }
   .poll-line { font-size:12px; color:var(--mut); margin-bottom:8px; display:flex;
            justify-content:space-between; gap:10px; align-items:center; }
   code.path { background:#f1f5f9; padding:1px 5px; border-radius:4px; font-size:11px; }
+  .secret-box { position:relative; }
+  .secret-box input { padding-right:64px; font-family:ui-monospace,Menlo,monospace; }
+  .secret-box button { position:absolute; right:4px; top:50%; transform:translateY(-50%);
+           padding:3px 8px; font-size:11px; }
+  .demo-line { display:flex; align-items:flex-start; gap:8px; padding:8px 0;
+           border-bottom:1px solid var(--bd); font-size:12px; }
+  .demo-line:last-child { border-bottom:0; }
+  .demo-status { min-width:52px; text-align:center; }
+  .demo-status .pill { display:block; }
+  .demo-body { flex:1; min-width:0; }
+  .demo-body .t { font-weight:650; }
+  .demo-body .d { color:var(--mut); font-size:11px; word-break:break-all; margin-top:2px; }
+  .cfg { font-size:11px; color:var(--mut); background:#f8fafc; border:1px solid var(--bd);
+         border-radius:7px; padding:8px; margin-top:8px; font-family:ui-monospace,Menlo,monospace; }
+  .reject-counters { font-size:11px; display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
+  .reject-counters span { background:#fef2f2; color:var(--bad); border-radius:999px; padding:1px 8px; }
+  .reject-counters span.zero { background:#f1f5f9; color:#94a3b8; }
 </style>
 </head>
 <body>
 <header>
-  <h1>影子流量网关 · 新旧报价旁路比对</h1>
+  <h1>影子流量网关 · HMAC-SHA256 验签与防重放</h1>
   <span class="stat" id="gwstat">connecting…</span>
 </header>
 <main>
-  <section class="card">
-    <h2>发起请求</h2>
-    <label>端点</label>
-    <select id="endpoint">
-      <option value="/quote">GET /quote — 普通 JSON 报价</option>
-      <option value="/quote-big">GET /quote-big — 32 MiB 流式响应</option>
-    </select>
-    <div class="row">
-      <div><label>主端延迟 p_delay (s)</label><input id="pdelay" value="0"></div>
-      <div><label>影子延迟 s_delay (s)</label><input id="sdelay" value="0"></div>
-    </div>
-    <div class="row">
-      <div><label>并发请求数</label><input id="concurrency" type="number" value="4" min="1" max="20"></div>
-      <div><label>自定义 status</label><input id="status" placeholder="默认 200"></div>
-    </div>
-    <div class="row">
-      <div>
-        <label>场景开关</label>
-        <select id="scenario">
-          <option value="">默认 (两端一致)</option>
-          <option value="diff=1">diff=1 影子制造差异</option>
-          <option value="fail=1">fail=1 两端强制 500</option>
-        </select>
+  <section>
+    <div class="card">
+      <h2>① 签名密钥（仅本页内存）</h2>
+      <div class="secret-box">
+        <input id="secret" type="password" autocomplete="off"
+               placeholder="输入与网关 SIGNING_SECRET 相同的密钥">
+        <button class="btn-ghost" id="clearSecret">清除</button>
       </div>
-      <div>
-        <label>大响应 size (仅 /quote-big)</label>
-        <input id="size" placeholder="默认 33554432">
+      <p class="hint">
+        密钥只保存在当前页面的 JS 变量中用于浏览器本地 HMAC 计算，
+        <b>不会上传、不写 localStorage / cookie、不参与任何请求体</b>；
+        刷新或清除后需重新输入。
+      </p>
+      <div class="cfg" id="signCfg">加载签名参数中…</div>
+    </div>
+
+    <div class="card">
+      <h2>② 发起签名请求</h2>
+      <label>端点</label>
+      <select id="endpoint">
+        <option value="/quote">GET /quote — 普通 JSON 报价</option>
+        <option value="/quote-big">GET /quote-big — 32 MiB 流式响应</option>
+      </select>
+      <div class="row">
+        <div><label>主端延迟 p_delay (s)</label><input id="pdelay" value="0"></div>
+        <div><label>影子延迟 s_delay (s)</label><input id="sdelay" value="0"></div>
       </div>
+      <div class="row">
+        <div><label>并发请求数</label><input id="concurrency" type="number" value="4" min="1" max="20"></div>
+        <div><label>自定义 status</label><input id="status" placeholder="默认 200"></div>
+      </div>
+      <div class="row">
+        <div>
+          <label>场景开关</label>
+          <select id="scenario">
+            <option value="">默认 (两端一致)</option>
+            <option value="diff=1">diff=1 影子制造差异</option>
+            <option value="fail=1">fail=1 两端强制 500</option>
+          </select>
+        </div>
+        <div>
+          <label>大响应 size (仅 /quote-big)</label>
+          <input id="size" placeholder="默认 33554432">
+        </div>
+      </div>
+      <div class="btns">
+        <button class="btn-pri" id="fire">并发发起（每请求独立签名）</button>
+        <button class="btn-ghost" id="clear">清空面板</button>
+      </div>
+      <p class="hint">
+        每个请求在浏览器内独立生成秒级时间戳与一次性 nonce 并计算 HMAC-SHA256；
+        合法请求继续逐块透传主端字节并与影子端比对，超时/断连规则不变。
+      </p>
     </div>
-    <div class="btns">
-      <button class="btn-pri" id="fire">并发发起</button>
-      <button class="btn-ghost" id="clear">清空面板</button>
+
+    <div class="card">
+      <h2>③ 验签 / 防重放演示</h2>
+      <div class="btns">
+        <button class="btn-pri" id="demoOk">正常签名请求</button>
+        <button class="btn-warn" id="demoReplay">重复请求（并发重放）</button>
+        <button class="btn-danger" id="demoBadSig">错误签名</button>
+        <button class="btn-danger" id="demoExpired">过期时间戳 (±60s 外)</button>
+        <button class="btn-danger" id="demoNoHeader">缺少签名头</button>
+      </div>
+      <p class="hint">
+        “重复请求”会用<b>同一组时间戳/nonce/签名</b>同时发出两个请求：
+        仅一个能进入上游，另一个在网关处直接 401 重放拒绝，
+        被拒请求不产生比对记录、不占影子名额。
+      </p>
+      <div id="demoResults"></div>
+      <div class="reject-counters" id="rejectCounters"></div>
     </div>
-    <p class="hint">
-      网关固定并行调用主端与影子端；客户端只收主端原始字节。影子
-      2 秒硬超时、最多 4 个并发，满额跳过并在记录中注明。
-    </p>
   </section>
 
   <section class="grid2">
@@ -118,7 +172,7 @@
     </div>
     <div class="card">
       <div class="poll-line">
-        <h2 style="margin:0">比对记录</h2>
+        <h2 style="margin:0">比对记录（仅验签通过的请求）</h2>
         <span><label style="display:inline;margin-right:6px">自动刷新</label>
           <input type="checkbox" id="autopoll" checked style="width:auto"></span>
       </div>
@@ -138,6 +192,69 @@
 const $ = id => document.getElementById(id);
 const sessions = [];   // {id, target, meta, chunks}
 let activeIdx = -1;
+let signCfg = null;
+// 密钥只活在这个变量里: 不落盘、不随请求发送
+let signingSecret = '';
+
+$('secret').addEventListener('input', e => { signingSecret = e.target.value; });
+$('clearSecret').onclick = () => {
+  signingSecret = '';
+  $('secret').value = '';
+};
+
+async function loadSignConfig() {
+  try {
+    signCfg = await (await fetch('/api/sign-config')).json();
+    $('signCfg').innerHTML =
+      `算法: ${signCfg.algorithm}<br>` +
+      `签名串: ${escapeHtml(signCfg.canonical_string)}<br>` +
+      `时间窗口: ±${signCfg.window_s}s · nonce 容量: ${signCfg.nonce_capacity}<br>` +
+      `请求头: ${signCfg.headers.timestamp} / ${signCfg.headers.nonce} / ${signCfg.headers.signature}<br>` +
+      `服务端密钥已配置: ${signCfg.secret_configured ? '是' : '否（所有报价请求将被拒）'}`;
+  } catch (e) {
+    $('signCfg').textContent = '签名参数加载失败: ' + e.message;
+  }
+}
+
+/* ---------------- 浏览器端 HMAC-SHA256 签名（密钥不出本页） ---------------- */
+
+async function hmacSha256Hex(secret, message) {
+  const key = await crypto.subtle.importKey(
+    'raw', new TextEncoder().encode(secret),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign(
+    'HMAC', key, new TextEncoder().encode(message));
+  return [...new Uint8Array(sig)]
+    .map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function newNonce() {
+  // 32 位随机串 + 时间基数, 只用于一次性标识, 不携带密钥信息
+  return crypto.randomUUID().replace(/-/g, '') + Date.now().toString(36);
+}
+
+async function buildSignHeaders(target, opts = {}) {
+  if (!signingSecret) throw new Error('请先在①中输入签名密钥');
+  const ts = opts.timestamp ?? String(Math.floor(Date.now() / 1000));
+  const nonce = opts.nonce ?? newNonce();
+  // 与服务端严格一致: GET、原始路径及查询串、时间戳、nonce 以换行连接
+  const message = ['GET', target, ts, nonce].join('\n');
+  let sig = await hmacSha256Hex(signingSecret, message);
+  if (opts.tamper) sig = sig.slice(0, -1) + (sig.slice(-1) === '0' ? '1' : '0');
+  return {
+    [signCfg.headers.timestamp]: ts,
+    [signCfg.headers.nonce]: nonce,
+    [signCfg.headers.signature]: sig,
+    [signCfg.headers.algorithm]: signCfg.algorithm,
+  };
+}
+
+async function signedFetch(target, opts = {}) {
+  const headers = opts.headers ?? await buildSignHeaders(target, opts.signOpts);
+  return fetch(target, { method: 'GET', headers });
+}
+
+/* ---------------- 原有请求构造 ---------------- */
 
 function buildUrl() {
   const p = new URLSearchParams();
@@ -171,11 +288,13 @@ function renderChunks() {
     return;
   }
   const s = sessions[activeIdx];
+  const rejected = s.rejectReason
+    ? `<span style="color:var(--bad)">验签拒绝: ${escapeHtml(s.rejectReason)}</span>` : '';
   meta.innerHTML = `目标 <code class="path">${s.target}</code>
     <span>状态: <b>${s.status ?? '…'}</b></span>
     <span>块数: <b>${s.chunks.length}</b></span>
     <span>累计字节: <b>${s.bytes}</b></span>
-    <span>耗时: <b>${s.ms ?? '…'} ms</b></span>`;
+    <span>耗时: <b>${s.ms ?? '…'} ms</b></span> ${rejected}`;
   if (!s.chunks.length) { box.innerHTML = '<div style="opacity:.6">等待首块…</div>'; return; }
   box.innerHTML = s.chunks.map((c, i) =>
     `<div class="chunk"><span class="idx">#${i}</span><span class="len">${c.length} B</span>
@@ -188,28 +307,37 @@ function preview(buf) {
   return text.length > 240 ? text.slice(0, 240) + ' …' : text;
 }
 function escapeHtml(s) {
-  return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+  return String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 }
 
 async function fireOne(target, idx) {
-  const sess = { idx, target, chunks: [], bytes: 0, status: null, ms: null };
+  const sess = { idx, target, chunks: [], bytes: 0, status: null, ms: null, rejectReason: '' };
   sessions.push(sess);
   activeIdx = sessions.length - 1;
   renderTabs(); renderChunks();
   const t0 = performance.now();
   try {
-    const resp = await fetch(target);
+    const resp = await signedFetch(target);
     sess.status = resp.status;
-    const reader = resp.body.getReader();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      sess.chunks.push(value);
-      sess.bytes += value.length;
-      if (sess === sessions[activeIdx]) renderChunks();
+    if (resp.status >= 400) {
+      // 验签/防重放拒绝: 响应体是错误 JSON, 不进入上游
+      const err = await resp.json().catch(() => ({}));
+      sess.rejectReason = err.detail || `HTTP ${resp.status}`;
+      sess.chunks.push(new TextEncoder().encode(
+        `[rejected ${resp.status}] ${sess.rejectReason}`));
+    } else {
+      const reader = resp.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        sess.chunks.push(value);
+        sess.bytes += value.length;
+        if (sess === sessions[activeIdx]) renderChunks();
+      }
     }
   } catch (e) {
     sess.chunks.push(new TextEncoder().encode('[fetch error] ' + e.message));
+    sess.rejectReason = e.message;
   } finally {
     sess.ms = Math.round(performance.now() - t0);
     if (sess === sessions[activeIdx]) renderChunks();
@@ -217,6 +345,7 @@ async function fireOne(target, idx) {
 }
 
 $('fire').onclick = async () => {
+  if (!signingSecret) { alert('请先在①中输入签名密钥'); return; }
   const n = Math.max(1, Math.min(20, Number($('concurrency').value) || 1));
   const target = buildUrl();
   $('fire').disabled = true;
@@ -231,6 +360,95 @@ $('clear').onclick = () => {
   renderTabs(); renderChunks();
 };
 
+/* ---------------- 验签演示面板 ---------------- */
+
+function addDemoResult(title, status, detail) {
+  const ok = status >= 200 && status < 300;
+  const cls = ok ? 'match' : 'mismatch';
+  const text = ok ? `放行 ${status}` : `拒绝 ${status}`;
+  const row = document.createElement('div');
+  row.className = 'demo-line';
+  row.innerHTML = `
+    <div class="demo-status"><span class="pill ${cls}">${text}</span></div>
+    <div class="demo-body">
+      <div class="t">${escapeHtml(title)}</div>
+      <div class="d">${escapeHtml(detail || '')}</div>
+    </div>`;
+  $('demoResults').prepend(row);
+}
+
+async function readErrorDetail(resp) {
+  const body = await resp.json().catch(() => ({}));
+  return body.detail || `HTTP ${resp.status}`;
+}
+
+$('demoOk').onclick = async () => {
+  try {
+    const target = '/quote?marker=demo-ok';
+    const t0 = performance.now();
+    const resp = await signedFetch(target);
+    const ms = Math.round(performance.now() - t0);
+    if (resp.ok) {
+      addDemoResult('正常签名请求', resp.status,
+        `验签通过并进入上游，逐块透传完成 (${ms} ms)，nonce 已消费`);
+    } else {
+      addDemoResult('正常签名请求', resp.status, await readErrorDetail(resp));
+    }
+  } catch (e) { addDemoResult('正常签名请求', 0, e.message); }
+  loadRecords();
+};
+
+$('demoReplay').onclick = async () => {
+  try {
+    const target = '/quote?marker=demo-replay';
+    // 关键: 两个并发请求共用同一组签名头 (同 ts + 同 nonce + 同签名)
+    const headers = await buildSignHeaders(target);
+    const [r1, r2] = await Promise.all([
+      signedFetch(target, { headers }),
+      signedFetch(target, { headers }),
+    ]);
+    if (r1.ok) {
+      addDemoResult('重放请求 A（同签名）', r1.status, '首个请求消费 nonce，进入主端/影子端');
+    } else {
+      addDemoResult('重放请求 A（同签名）', r1.status, await readErrorDetail(r1));
+    }
+    if (r2.ok) {
+      addDemoResult('重放请求 B（同签名·并发）', r2.status, '意外放行: 防重放失效');
+    } else {
+      addDemoResult('重放请求 B（同签名·并发）', r2.status,
+        await readErrorDetail(r2) + '；未请求上游、未占影子名额');
+    }
+  } catch (e) { addDemoResult('并发重放', 0, e.message); }
+  loadRecords();
+};
+
+$('demoBadSig').onclick = async () => {
+  try {
+    const target = '/quote?marker=demo-badsig';
+    const resp = await signedFetch(target, { signOpts: { tamper: true } });
+    addDemoResult('错误签名（末位篡改）', resp.status, await readErrorDetail(resp));
+  } catch (e) { addDemoResult('错误签名', 0, e.message); }
+};
+
+$('demoExpired').onclick = async () => {
+  try {
+    const target = '/quote?marker=demo-expired';
+    // 签名本身合法, 但时间戳取 61 秒前, 超出 ±60s 窗口
+    const oldTs = String(Math.floor(Date.now() / 1000) - 61);
+    const resp = await signedFetch(target, { signOpts: { timestamp: oldTs } });
+    addDemoResult('过期时间戳（now-61s）', resp.status, await readErrorDetail(resp));
+  } catch (e) { addDemoResult('过期时间戳', 0, e.message); }
+};
+
+$('demoNoHeader').onclick = async () => {
+  try {
+    const resp = await fetch('/quote?marker=demo-noheader');
+    addDemoResult('缺少签名头（裸请求）', resp.status, await readErrorDetail(resp));
+  } catch (e) { addDemoResult('缺少签名头', 0, e.message); }
+};
+
+/* ---------------- 比对记录与状态 ---------------- */
+
 const RESULT_TEXT = {
   match: '一致', mismatch: '不一致', shadow_timeout: '影子超时',
   shadow_error: '影子失败', shadow_skipped_no_slot: '影子跳过(名额满)',
@@ -244,10 +462,14 @@ function shortHash(h) { return h ? h.slice(0, 10) + '…' : '—'; }
 async function loadRecords() {
   try {
     const recs = await (await fetch('/api/records')).json();
-    const state = await (await fetch('/api/state')).json();
+    const st = await (await fetch('/api/state')).json();
     $('gwstat').textContent =
-      `影子在途 ${state.shadow_in_flight}/${state.shadow_capacity} · ` +
-      `记录 ${state.records} 条 · 峰值 RSS ${state.max_rss_mib ?? '?'} MiB / 限额 96 MiB`;
+      `影子在途 ${st.shadow_in_flight}/${st.shadow_capacity} · ` +
+      `有效 nonce ${st.nonce_retained}/${st.nonce_capacity} · ` +
+      `记录 ${st.records} 条 · 峰值 RSS ${st.max_rss_mib ?? '?'} MiB`;
+    const counters = st.auth_rejected || {};
+    $('rejectCounters').innerHTML = Object.entries(counters).map(([k, v]) =>
+      `<span class="${v ? '' : 'zero'}">${escapeHtml(k)}: ${v}</span>`).join('');
     $('records').innerHTML = recs.map((r, i) => {
       const cls = (r.result || 'pending').replace(/[^a-z_]/g, '');
       const primary = r.primary === 'completed'
@@ -273,6 +495,7 @@ async function loadRecords() {
 
 $('autopoll').onchange = () => {};
 setInterval(() => { if ($('autopoll').checked) loadRecords(); }, 1500);
+loadSignConfig();
 loadRecords();
 </script>
 </body>

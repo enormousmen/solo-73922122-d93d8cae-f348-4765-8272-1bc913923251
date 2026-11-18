@@ -8,11 +8,18 @@
 - 最多 4 个影子并发, 名额满时跳过影子并注明原因, 主请求照常通过
 - 客户端断连同时终止两端; 影子通信实际退出后才归还名额
 - 不整份缓存/落盘响应, 每块读取后立即更新哈希并释放
+
+HMAC-SHA256 验签与防重放 (仅 GET /quote 与 /quote-big):
+- 签名串依次以换行连接 GET、原始路径及查询串、秒级时间戳、一次性随机数
+- 密钥只从服务端环境变量 SIGNING_SECRET 读取; 时间戳与服务端相差不超过 60s
+- 同一 nonce 在签名有效期内只放行一次; 单进程最多保留 1024 个有效 nonce, 满则拒新
+- 验签失败/重放/满额直接拒绝, 不请求主端与影子端, 不占影子名额
 """
 from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import logging
 import os
 import resource
@@ -32,6 +39,18 @@ MAX_SHADOW_CALLS = int(os.environ.get("MAX_SHADOW_CALLS", "4"))
 SHADOW_TIMEOUT_S = float(os.environ.get("SHADOW_TIMEOUT_S", "2.0"))
 READ_CHUNK = 64 * 1024
 MAX_RECORDS = int(os.environ.get("MAX_RECORDS", "100"))
+
+# ---- HMAC-SHA256 验签 / 防重放配置 (仅作用于 GET /quote 与 /quote-big) ----
+# 密钥只从服务端环境读取, 不接受请求传入, 不随响应/日志/页面输出
+SIGNING_SECRET = os.environ.get("SIGNING_SECRET", "")
+SIGN_WINDOW_S = int(os.environ.get("SIGN_WINDOW_S", "60"))
+MAX_NONCES = int(os.environ.get("MAX_NONCES", "1024"))
+MAX_NONCE_LEN = 128
+HMAC_ALGO = "HMAC-SHA256"
+HDR_TS = "X-Sign-Timestamp"
+HDR_NONCE = "X-Sign-Nonce"
+HDR_SIG = "X-Sign"
+HDR_ALGO = "X-Sign-Algorithm"
 
 HOP_BY_HOP = {
     "connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
@@ -67,6 +86,47 @@ class ShadowLimiter:
             self.in_flight -= 1
 
 
+class NonceStore:
+    """
+    一次性随机数存储 (单进程内存, 不落盘):
+
+    - key=nonce, value=该签名的失效时刻 (秒级时间戳 + 窗口)
+    - 同一 nonce 在签名仍有效期间只允许消费一次, 并发下由同一把锁串行裁决,
+      check-and-insert 原子完成, 并发重放也无法进入上游
+    - 容量上限 MAX_NONCES (默认 1024); 先清过期项, 仍满则拒绝新请求
+    - 过期项惰性清理: 每次校验时顺手清除, 不做后台定时任务
+    """
+
+    def __init__(self, capacity: int = MAX_NONCES, window_s: int = SIGN_WINDOW_S):
+        self.capacity = capacity
+        self.window_s = window_s
+        self._nonces: dict[str, int] = {}
+        self.lock = asyncio.Lock()
+
+    def _purge_expired(self, now: int) -> None:
+        expired = [n for n, exp in self._nonces.items() if exp <= now]
+        for n in expired:
+            del self._nonces[n]
+
+    async def check_and_consume(self, nonce: str, ts: int, now: int) -> tuple[bool, str]:
+        """返回 (是否放行, 拒绝原因)。放行时 nonce 立即登记, 重放再来必被拒。"""
+        async with self.lock:
+            self._purge_expired(now)
+            if nonce in self._nonces:
+                return False, "replay: nonce has already been used"
+            if len(self._nonces) >= self.capacity:
+                return False, (
+                    f"nonce store full: {self.capacity} valid nonces retained, "
+                    "retry after the window expires"
+                )
+            # 登记到该签名自身失效为止: 失效前重放必拦, 失效后惰性清除腾出名额
+            self._nonces[nonce] = ts + self.window_s
+            return True, ""
+
+    def count(self) -> int:
+        return len(self._nonces)
+
+
 @dataclass
 class CallContext:
     rid: str
@@ -94,6 +154,16 @@ async def lifespan(app: FastAPI):
     state["limiter"] = ShadowLimiter()
     state["records"] = []
     state["records_lock"] = asyncio.Lock()
+    state["nonce_store"] = NonceStore()
+    # 验签拒绝计数: 按原因归类, 证明拒绝发生在上游调用之前
+    state["auth_rejected"] = {
+        "missing_headers": 0,
+        "bad_signature": 0,
+        "timestamp_expired": 0,
+        "replay": 0,
+        "nonce_store_full": 0,
+        "secret_not_configured": 0,
+    }
     try:
         yield
     finally:
@@ -105,6 +175,84 @@ app = FastAPI(title="shadow-traffic-gateway", lifespan=lifespan)
 
 def now_ms() -> int:
     return int(time.time() * 1000)
+
+
+def _reject(reason_key: str, detail: str, status_code: int = 401) -> JSONResponse:
+    """统一的验签拒绝出口: 在此之前绝不触碰主端/影子端, 也不占影子名额。"""
+    state["auth_rejected"][reason_key] = state["auth_rejected"].get(reason_key, 0) + 1
+    logging.getLogger("auth").warning("rejected quote request: %s", detail)
+    return JSONResponse(
+        status_code=status_code,
+        content={"detail": detail, "rejected_before_upstream": True},
+    )
+
+
+def compute_signature(secret: str, method: str, path_and_query: str,
+                      timestamp: str, nonce: str) -> str:
+    """签名串: method、原始路径及查询串、秒级时间戳、nonce 依次以换行连接。"""
+    message = "\n".join([method, path_and_query, timestamp, nonce])
+    return hmac.new(secret.encode("utf-8"),
+                    message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+async def verify_request(request: Request) -> Optional[JSONResponse]:
+    """
+    校验 GET /quote 与 /quote-big 的 HMAC-SHA256 签名与一次性 nonce。
+
+    顺序: 头存在性 -> 算法标识 -> 时间戳窗口 -> 签名常量时间比较 -> nonce 原子消费。
+    任一步失败立即返回 JSONResponse(401/503), 放行返回 None。
+    """
+    if not SIGNING_SECRET:
+        # 服务端未配置密钥属于部署故障: 直接拒绝, 绝不退化为免签放行
+        return _reject(
+            "secret_not_configured",
+            "server signing secret is not configured",
+            status_code=503,
+        )
+
+    timestamp = request.headers.get(HDR_TS, "")
+    nonce = request.headers.get(HDR_NONCE, "")
+    signature = request.headers.get(HDR_SIG, "")
+    if not timestamp or not nonce or not signature:
+        return _reject(
+            "missing_headers",
+            f"missing signing header(s): require {HDR_TS}, {HDR_NONCE}, {HDR_SIG}",
+        )
+    if request.headers.get(HDR_ALGO, HMAC_ALGO) != HMAC_ALGO:
+        return _reject("bad_signature", f"unsupported sign algorithm, require {HMAC_ALGO}")
+
+    # 秒级时间戳, 与服务端时钟相差不超过 SIGN_WINDOW_S 秒
+    if not timestamp.isdigit():
+        return _reject("bad_signature", "timestamp must be a unix epoch in seconds")
+    ts = int(timestamp)
+    now = int(time.time())
+    if abs(now - ts) > SIGN_WINDOW_S:
+        return _reject(
+            "timestamp_expired",
+            f"timestamp out of window: |server_time - timestamp| > {SIGN_WINDOW_S}s "
+            f"(timestamp={timestamp}, server_time={now})",
+        )
+
+    if len(nonce) > MAX_NONCE_LEN or not nonce.isascii():
+        return _reject("bad_signature",
+                       f"nonce must be ascii and no longer than {MAX_NONCE_LEN} chars")
+
+    # 原始路径及查询串: 与浏览器/客户端签名时使用的字符串完全一致
+    path_and_query = request.url.path
+    if request.url.query:
+        path_and_query += "?" + request.url.query
+    expected = compute_signature(SIGNING_SECRET, request.method,
+                                 path_and_query, timestamp, nonce)
+    if not hmac.compare_digest(expected, signature.strip().lower()):
+        return _reject("bad_signature", "HMAC-SHA256 signature verification failed")
+
+    # 签名有效: 原子地消费 nonce。锁内 check-and-insert, 并发重放只有一个能通过
+    ok, reason = await state["nonce_store"].check_and_consume(nonce, ts, now)
+    if not ok:
+        if reason.startswith("replay"):
+            return _reject("replay", reason)
+        return _reject("nonce_store_full", reason, status_code=503)
+    return None
 
 
 async def append_record(rec: dict) -> None:
@@ -338,6 +486,7 @@ async def proxy(request: Request, target: str) -> StreamingResponse:
 @app.get("/healthz")
 async def healthz():
     lim: ShadowLimiter = state["limiter"]
+    nonces: NonceStore = state["nonce_store"]
     return {
         "status": "ok",
         "primary": PRIMARY_URL,
@@ -345,6 +494,13 @@ async def healthz():
         "shadow_in_flight": lim.in_flight,
         "shadow_capacity": lim.capacity,
         "shadow_timeout_s": SHADOW_TIMEOUT_S,
+        "signing": {
+            "algorithm": HMAC_ALGO,
+            "window_s": SIGN_WINDOW_S,
+            "secret_configured": bool(SIGNING_SECRET),
+            "nonce_retained": nonces.count(),
+            "nonce_capacity": nonces.capacity,
+        },
     }
 
 
@@ -357,12 +513,38 @@ async def get_records():
 @app.get("/api/state")
 async def get_state():
     lim: ShadowLimiter = state["limiter"]
+    nonces: NonceStore = state["nonce_store"]
     rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return {
         "shadow_in_flight": lim.in_flight,
         "shadow_capacity": lim.capacity,
         "records": len(state["records"]),
         "max_rss_mib": round(rss_kb / 1024, 2),
+        "nonce_retained": nonces.count(),
+        "nonce_capacity": nonces.capacity,
+        "sign_window_s": SIGN_WINDOW_S,
+        "secret_configured": bool(SIGNING_SECRET),
+        "auth_rejected": dict(state["auth_rejected"]),
+    }
+
+
+@app.get("/api/sign-config")
+async def sign_config():
+    """只返回浏览器签名所需的公开参数, 绝不返回密钥本身。"""
+    return {
+        "algorithm": HMAC_ALGO,
+        "method": "GET",
+        "headers": {
+            "timestamp": HDR_TS,
+            "nonce": HDR_NONCE,
+            "signature": HDR_SIG,
+            "algorithm": HDR_ALGO,
+        },
+        "window_s": SIGN_WINDOW_S,
+        "max_nonce_len": MAX_NONCE_LEN,
+        "nonce_capacity": MAX_NONCES,
+        "secret_configured": bool(SIGNING_SECRET),
+        "canonical_string": "GET\\n<原始路径及查询串>\\n<秒级时间戳>\\n<一次性随机数>",
     }
 
 
@@ -370,6 +552,10 @@ async def get_state():
 @app.get("/quote")
 @app.get("/quote-big")
 async def quote_proxy(request: Request):
+    # 先验签再触碰任何上游: 失败/重放/满额都不会请求主端与影子端, 不占影子名额
+    rejected = await verify_request(request)
+    if rejected is not None:
+        return rejected
     target = request.url.path
     if request.url.query:
         target += "?" + request.url.query
